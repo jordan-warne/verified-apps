@@ -1,0 +1,64 @@
+name: Android App Submission
+description: Submit a new app signature to the database
+title: "[New]: "
+labels: ["Android", "Unchecked"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to submit a new app! Please make sure you edit the title above to include the app's name.
+ 
+  - type: markdown
+    attributes:
+      value: |
+        ## Submission
+
+        This form is for apps you have **personally** checked in [AppVerifier](https://github.com/soupslurpr/AppVerifier).
+        You will need AppVerifier to copy certain information from and paste in the fields below.
+
+  - type: textarea
+    id: verificationInfo
+    attributes:
+      label: Verification Info
+      description: |
+        In AppVerifier, open the app you're submitting, click "Copy Verification Info" and then paste the resultant string exactly here.
+      placeholder: |
+        com.example.appname
+        3A:04:A8:0B:2A:88:33:4C:74:74:85:F0:B2:15:16:40:A3:8B:B3:D2:D7:3A:8E:AB:81:DF:50:3E:0F:02:02:B2
+      render: text
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Survey
+
+        Some data about the source of your submission would be greatly appreciated.
+
+  - type: dropdown
+    id: appSource
+    attributes:
+      label: App Source
+      description: Where did you download the app you're submitting a hash for?
+      options:
+        - Google Play / Aurora Store
+        - F-Droid
+        - Accrescent
+        - GitHub
+        - GitLab
+        - Codeberg
+        - Developer's Website
+        - Other
+
+  - type: dropdown
+    id: verifierSource
+    attributes:
+      label: AppVerifier Source
+      description: Where did you download AppVerifier?
+      options:
+        - Accrescent (which I obtained from the GrapheneOS App Store)
+        - Accrescent (which I obtained from Accrescent's website)
+        - Accrescent (which I obtained from GitHub Releases)
+        - AppVerifier's GitHub Releases
+        - Other
