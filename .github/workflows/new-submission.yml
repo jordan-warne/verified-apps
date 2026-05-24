@@ -75,7 +75,6 @@ jobs:
             exit 1
           fi
 
-          echo "$packageName" >> $GITHUB_STEP_SUMMARY
           echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
           echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
 
@@ -145,3 +144,29 @@ jobs:
           name: fdroid-${{ env.PACKAGE_NAME }}.zip
           path: ${{ steps.appDownload.outputs.apkPath }}
           retention-days: 7
+
+  accrescent:
+    name: Accrescent
+    runs-on: ubuntu-latest
+    needs: parse
+
+    env:
+      PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
+
+    steps:
+      - name: Download Repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: "false"
+
+      - name: Get App Info From API
+        id: appInfo
+        uses: ./.github/actions/get-accrescent-app
+        with:
+          packageName: ${{ env.PACKAGE_NAME }}
+
+      - name: Print App Info
+        env:
+          DOWNLOAD_INFO: ${{ steps.appInfo.outputs.downloadInfo }}
+        run: |
+          printf '%s\n' "$DOWNLOAD_INFO" | jq .
