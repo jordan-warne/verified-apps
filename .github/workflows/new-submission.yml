@@ -10,6 +10,7 @@ concurrency:
 
 jobs:
   parse:
+    name: Parse Submission
     # if: |
     #   (
     #   github.event.label.name == 'Unchecked' &&
@@ -22,7 +23,7 @@ jobs:
 
     steps:
       - name: Download Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: "false"
 
@@ -74,10 +75,12 @@ jobs:
             exit 1
           fi
 
+          echo "$packageName" >> $GITHUB_STEP_SUMMARY
           echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
           echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
 
   fdroid:
+    name: F-Droid
     runs-on: ubuntu-latest
     needs: parse
 
@@ -88,6 +91,11 @@ jobs:
     #   fdroidSignature: ${{ steps. }}
 
     steps:
+      - name: Download Repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: "false"
+
       - name: Download fdroidcl
         id: fdroidcl
         env:
@@ -99,38 +107,41 @@ jobs:
           chmod +x $FDROIDCL
           echo "bin=$FDROIDCL" >> "$GITHUB_OUTPUT"
 
-      - name: Restore F-Droid Repository Cache
-        id: fdroidRepo
+      - name: Restore Repository Cache
         uses: actions/cache@v5
         with:
           path: |
             /home/runner/.cache/fdroidcl/cache-gob
           key: fdroidRepo
 
-      - name: Update F-Droid Repository
-        if: steps.fdroidRepo.outputs.cache-hit != 'true'
+      - name: Restore APK Cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /home/runner/.cache/fdroidcl/apks
+          key: fdroid-${{ env.PACKAGE_NAME }}
+
+      - name: Update Repository
         run: |
           ./${{ steps.fdroidcl.outputs.bin }} update
 
-      - name: Download App Package
+      - name: Download APK
         id: appDownload
         run: |
+          ./${{ steps.fdroidcl.outputs.bin }} download $PACKAGE_NAME
           apkPath=$(./${{ steps.fdroidcl.outputs.bin }} download $PACKAGE_NAME 2>&1 | grep '^APK available in ' | sed 's/^APK available in //')
           echo "$apkPath"
           echo "apkPath=$apkPath" >> "$GITHUB_OUTPUT"
 
       - name: Get APK Signature
         id: appSignature
-        run: |
-          apkAnalysis=$(${ANDROID_SDK_ROOT}/build-tools/37.0.0/apksigner verify --print-certs ${{ steps.appDownload.outputs.apkPath }})
-          sha256=$(${ANDROID_SDK_ROOT}/build-tools/37.0.0/apksigner verify --print-certs ${{ steps.appDownload.outputs.apkPath }} 2>&1 | sed -n 's/.*SHA-256 digest: \([0-9a-fA-F]\{64\}\).*/\1/p' | head -1)
-          echo "$sha256"
-          formattedSig=$(printf '%s' "$sha256" | tr '[:lower:]' '[:upper:]' | sed -E 's/(..)/\1:/g; s/:$//')
-          echo "$formattedSig"
-          echo "formattedSig=$formattedSig" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/get-signature
+        with:
+          path: ${{ steps.appDownload.outputs.apkPath }}
 
-      - name: Upload apk
-        uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
         with:
           name: fdroid-${{ env.PACKAGE_NAME }}.zip
           path: ${{ steps.appDownload.outputs.apkPath }}
+          retention-days: 7
