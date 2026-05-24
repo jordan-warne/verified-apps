@@ -73,11 +73,91 @@ jobs:
           echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
           echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
 
+  accrescent:
+    name: Accrescent
+    runs-on: ubuntu-latest
+    needs: parse
+    continue-on-error: true
+
+    outputs:
+      signature: ${{ steps.appSignature.outputs.signature }}
+      match: ${{ steps.matches.outputs.status }}
+
+    env:
+      PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
+
+    steps:
+      - name: Download Repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: "false"
+
+      - name: Get App Info From API
+        id: appInfo
+        uses: ./.github/actions/get-accrescent-app
+        with:
+          packageName: ${{ env.PACKAGE_NAME }}
+
+      - name: Print App Info
+        id: accrescentInfo
+        env:
+          DOWNLOAD_INFO: ${{ steps.appInfo.outputs.downloadInfo }}
+        run: |
+          printf '%s\n' "$DOWNLOAD_INFO" | jq .
+          firstUrl=$(printf '%s\n' "$DOWNLOAD_INFO" | jq -r '.split_download_info[0].url')
+          firstApk=$(basename $firstUrl)
+          echo "First URL: $firstUrl"
+          echo "APK Basename: $firstApk"
+          echo "apkUrl=$firstUrl" >> "$GITHUB_OUTPUT"
+          echo "apkName=$firstApk" >> "$GITHUB_OUTPUT"
+
+      - name: Restore APK Cache
+        id: apkCache
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.accrescentInfo.outputs.apkName }}
+          key: accrescent-${{ env.PACKAGE_NAME }}-${{ steps.accrescentInfo.outputs.apkName }}
+
+      - name: Download APKs
+        if: steps.apkCache.outputs.cache-hit != 'true'
+        id: appDownload
+        env:
+          DOWNLOAD_INFO: ${{ steps.accrescentInfo.outputs.apkUrl }}
+        run: |
+          wget "$DOWNLOAD_INFO"
+
+      - name: Get (First) APK Signature
+        id: appSignature
+        uses: ./.github/actions/get-signature
+        with:
+          path: ${{ steps.accrescentInfo.outputs.apkName }}
+
+      - name: Write Summary
+        id: summary
+        env: 
+          SIGNATURE: ${{ steps.appSignature.outputs.signature }}
+        run: |
+          echo "$PACKAGE_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "$SIGNATURE" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Matches User-Provided?
+        id: matches
+        run: |
+          if [[ "${{ needs.parse.outputs.packageSignature }}" == "${{ steps.appSignature.outputs.signature }}" ]]; then
+            echo "status=:white_check_mark:" >> $GITHUB_OUTPUT
+          else
+            echo "status=:x:" >> $GITHUB_OUTPUT
+          fi
+
   fdroid:
     name: F-Droid
     runs-on: ubuntu-latest
     needs: parse
     continue-on-error: true
+
+    outputs:
+      signature: ${{ steps.appSignature.outputs.signature }}
+      match: ${{ steps.matches.outputs.status }}
 
     env:
       PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
@@ -132,78 +212,30 @@ jobs:
           path: ${{ steps.appDownload.outputs.apkPath }}
 
       - name: Write Summary
+        id: summary
         env: 
           SIGNATURE: ${{ steps.appSignature.outputs.signature }}
         run: |
           echo "$PACKAGE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "$SIGNATURE" >> $GITHUB_STEP_SUMMARY
 
-  accrescent:
-    name: Accrescent
-    runs-on: ubuntu-latest
-    needs: parse
-    continue-on-error: true
-
-    env:
-      PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
-
-    steps:
-      - name: Download Repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: "false"
-
-      - name: Get App Info From API
-        id: appInfo
-        uses: ./.github/actions/get-accrescent-app
-        with:
-          packageName: ${{ env.PACKAGE_NAME }}
-
-      - name: Print App Info
-        id: accrescentInfo
-        env:
-          DOWNLOAD_INFO: ${{ steps.appInfo.outputs.downloadInfo }}
+      - name: Matches User-Provided?
+        id: matches
         run: |
-          printf '%s\n' "$DOWNLOAD_INFO" | jq .
-          firstUrl=$(printf '%s\n' "$DOWNLOAD_INFO" | jq -r '.split_download_info[0].url')
-          firstApk=$(basename $firstUrl)
-          echo "First URL: $firstUrl"
-          echo "APK Basename: $firstApk"
-          echo "apkUrl=$firstUrl" >> "$GITHUB_OUTPUT"
-          echo "apkName=$firstApk" >> "$GITHUB_OUTPUT"
-
-      - name: Restore APK Cache
-        id: apkCache
-        uses: actions/cache@v5
-        with:
-          path: ${{ steps.accrescentInfo.outputs.apkName }}
-          key: accrescent-${{ env.PACKAGE_NAME }}-${{ steps.accrescentInfo.outputs.apkName }}
-
-      - name: Download APKs
-        if: steps.apkCache.outputs.cache-hit != 'true'
-        id: appDownload
-        env:
-          DOWNLOAD_INFO: ${{ steps.accrescentInfo.outputs.apkUrl }}
-        run: |
-          wget "$DOWNLOAD_INFO"
-
-      - name: Get (First) APK Signature
-        id: appSignature
-        uses: ./.github/actions/get-signature
-        with:
-          path: ${{ steps.accrescentInfo.outputs.apkName }}
-
-      - name: Write Summary
-        env: 
-          SIGNATURE: ${{ steps.appSignature.outputs.signature }}
-        run: |
-          echo "$PACKAGE_NAME" >> $GITHUB_STEP_SUMMARY
-          echo "$SIGNATURE" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.parse.outputs.packageSignature }}" == "${{ steps.appSignature.outputs.signature }}" ]]; then
+            echo "status=:white_check_mark:" >> $GITHUB_OUTPUT
+          else
+            echo "status=:x:" >> $GITHUB_OUTPUT
+          fi
 
   gplay:
     name: Google Play
     runs-on: ubuntu-latest
     needs: parse
+
+    outputs:
+      signature: ${{ steps.appSignature.outputs.signature }}
+      match: ${{ steps.matches.outputs.status }}
 
     env:
       PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
@@ -236,7 +268,15 @@ jobs:
           persist-credentials: "false"
           path: gplay-apk-downloader
 
+      - name: Restore Play Credentials Cache
+        id: authCache
+        uses: actions/cache@v5
+        with:
+          path: /home/runner/.gplay-auth.json
+          key: gplayAuth
+
       - name: Authenticate to Google Play
+        if: steps.authCache.outputs.cache-hit != 'true'
         run: ./gplay-apk-downloader/gplay auth
 
       - name: Show App Info
@@ -253,7 +293,7 @@ jobs:
         id: apkCache
         uses: actions/cache@v5
         with:
-          path: ${{ env.PACKAGE_NAME }}-${{ steps.appVersion.outputs.version }}.apk
+          path: gplay-${{ env.PACKAGE_NAME }}.apk
           key: gplay-${{ env.PACKAGE_NAME }}-${{ steps.appVersion.outputs.version }}
 
       - name: Download APK
@@ -264,6 +304,7 @@ jobs:
           ./gplay-apk-downloader/gplay download "$PACKAGE_NAME"
 
       - name: Rename APK
+        if: steps.apkCache.outputs.cache-hit != 'true'
         run: |
           download="$(ls -1 *.apk | head -1)"
           mv "$download" "gplay-${PACKAGE_NAME}.apk"
@@ -275,9 +316,45 @@ jobs:
         with:
           path: gplay-${{ env.PACKAGE_NAME }}.apk
 
+      - name: Matches User-Provided?
+        id: matches
+        run: |
+          if [[ "${{ needs.parse.outputs.packageSignature }}" == "${{ steps.appSignature.outputs.signature }}" ]]; then
+            echo "status=:white_check_mark:" >> $GITHUB_OUTPUT
+          else
+            echo "status=:x:" >> $GITHUB_OUTPUT
+          fi
+
       - name: Write Summary
+        id: summary
         env: 
           SIGNATURE: ${{ steps.appSignature.outputs.signature }}
         run: |
           echo "$PACKAGE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "$SIGNATURE" >> $GITHUB_STEP_SUMMARY
+
+  summary:
+    name: Generate Summary
+    runs-on: ubuntu-latest
+    needs: [parse, accrescent, fdroid, gplay]
+
+    if: always()
+
+    steps:
+
+      - name: Create Table
+        run: |
+          echo "We attempted to check Accrescent, F-Droid, and Google Play for this app. If we found any results, they'll be in the table below:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | Matches | Verification |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|"  >> $GITHUB_STEP_SUMMARY
+          echo "| User-Provided | :arrow_down: | ${{ needs.parse.outputs.packageName }}<br>${{ needs.parse.outputs.packageSignature }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Accrescent | ${{ needs.accrescent.outputs.match }} | ${{ needs.parse.outputs.packageName }}<br>${{ needs.accrescent.outputs.signature }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| F-Droid | ${{ needs.fdroid.outputs.match }} | ${{ needs.parse.outputs.packageName }}<br>${{ needs.fdroid.outputs.signature }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Google Play | ${{ needs.gplay.outputs.match }} | ${{ needs.parse.outputs.packageName }}<br>${{ needs.gplay.outputs.signature }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Grab Unsuccessful
+        if: needs.accrescent.result != 'success' && needs.fdroid.result != 'success' && needs.gplay.result != 'success'
+        run: |
+          echo ""
+          echo "We weren't able to grab this app from any of the mainstream sources we check. Please provide a link to exactly where you downloaded it, thanks!"
