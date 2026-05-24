@@ -4,6 +4,10 @@ on:
   issues:
     types: [labeled, unlabeled]
 
+concurrency:
+  group: ${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   parse:
     # if: |
@@ -17,6 +21,11 @@ jobs:
       packageSignature: ${{ steps.setOutputs.outputs.packageSignature }}
 
     steps:
+      - name: Download Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: "false"
+
       - uses: stefanbuck/github-issue-parser@v3.2.5
         id: issue-parser
         with:
@@ -25,19 +34,17 @@ jobs:
       - name: Print jsonString
         env:
           JSON_STRING: ${{ steps.issue-parser.outputs.jsonString }}
-        run:
+        run: |
           echo "$JSON_STRING"
-          echo "${{ github.event.opened.labels }}"
+          echo "${{ github.event.issue.labels }}"
 
       - name: Set outputs
         id: setOutputs
         env:
-          JSON_STRING: ${{ steps.issue-parser.outputs.issueparser_verification_info }}
+          JSON_STRING: ${{ steps.issue-parser.outputs.issueparser_verificationInfo }}
         
         run: |
           input="$JSON_STRING"
-
-          echo "$input"
 
           stripped="${input#\`\`\`}"
           stripped="${stripped%\`\`\`}"
@@ -70,9 +77,60 @@ jobs:
           echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
           echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
 
-          cat "$GITHUB_OUTPUT"
+  fdroid:
+    runs-on: ubuntu-latest
+    needs: parse
 
-      - name: Print outputs
-        run:
-          echo "${{ steps.setOutputs.outputs.packageName }}"
-          echo "${{ steps.setOutputs.outputs.packageSignature }}"
+    env:
+      PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
+
+    # outputs:
+    #   fdroidSignature: ${{ steps. }}
+
+    steps:
+      - name: Download fdroidcl
+        id: fdroidcl
+        env:
+          FDROIDCL_VERSION: v0.8.1
+        run: |
+          FDROIDCL="fdroidcl_${FDROIDCL_VERSION}_linux_amd64"
+          export FDROIDCL
+          wget "https://github.com/Hoverth/fdroidcl/releases/download/${FDROIDCL_VERSION}/${FDROIDCL}"
+          chmod +x $FDROIDCL
+          echo "bin=$FDROIDCL" >> "$GITHUB_OUTPUT"
+
+      - name: Restore F-Droid Repository Cache
+        id: fdroidRepo
+        uses: actions/cache@v5
+        with:
+          path: |
+            /home/runner/.cache/fdroidcl/cache-gob
+          key: fdroidRepo
+
+      - name: Update F-Droid Repository
+        if: steps.fdroidRepo.outputs.cache-hit != 'true'
+        run: |
+          ./${{ steps.fdroidcl.outputs.bin }} update
+
+      - name: Download App Package
+        id: appDownload
+        run: |
+          apkPath=$(./${{ steps.fdroidcl.outputs.bin }} download $PACKAGE_NAME 2>&1 | grep '^APK available in ' | sed 's/^APK available in //')
+          echo "$apkPath"
+          echo "apkPath=$apkPath" >> "$GITHUB_OUTPUT"
+
+      - name: Get APK Signature
+        id: appSignature
+        run: |
+          apkAnalysis=$(${ANDROID_SDK_ROOT}/build-tools/37.0.0/apksigner verify --print-certs ${{ steps.appDownload.outputs.apkPath }})
+          sha256=$(${ANDROID_SDK_ROOT}/build-tools/37.0.0/apksigner verify --print-certs ${{ steps.appDownload.outputs.apkPath }} 2>&1 | sed -n 's/.*SHA-256 digest: \([0-9a-fA-F]\{64\}\).*/\1/p' | head -1)
+          echo "$sha256"
+          formattedSig=$(printf '%s' "$sha256" | tr '[:lower:]' '[:upper:]' | sed -E 's/(..)/\1:/g; s/:$//')
+          echo "$formattedSig"
+          echo "formattedSig=$formattedSig" >> "$GITHUB_OUTPUT"
+
+      - name: Upload apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdroid-${{ env.PACKAGE_NAME }}.zip
+          path: ${{ steps.appDownload.outputs.apkPath }}
