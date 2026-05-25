@@ -15,6 +15,8 @@ jobs:
     outputs:
       packageName: ${{ steps.setOutputs.outputs.packageName }}
       packageSignature: ${{ steps.setOutputs.outputs.packageSignature }}
+      isDuplicate: ${{ steps.duplicateCheck.outputs.isDuplicate }}
+      duplicateOf: ${{ steps.duplicateCheck.outputs.duplicateOf }}
 
     if: ${{ github.event.label.name == 'Unchecked' }}
 
@@ -75,10 +77,66 @@ jobs:
           echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
           echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
 
+      - name: Check for duplicate in data.yml
+        id: duplicateCheck
+        env:
+          PACKAGE: ${{ steps.setOutputs.outputs.packageName }}
+          SIGNATURE: ${{ steps.setOutputs.outputs.packageSignature }}
+        run: |
+          echo "isDuplicate=false" >> "$GITHUB_OUTPUT"
+
+          if [[ ! -f data.yml ]] || [[ ! -s data.yml ]]; then
+            exit 0
+          fi
+
+          export PACKAGE SIGNATURE
+          duplicate_of=$(
+            yq -r '
+              .[]
+              | select(.package == strenv(PACKAGE))
+              | . as $entry
+              | $entry.signature[]
+              | select(.fingerprint == strenv(SIGNATURE))
+              | (.issue // $entry.issue)
+            ' data.yml | sort -n | head -n1
+          )
+
+          if [[ -n "$duplicate_of" && "$duplicate_of" != "null" ]]; then
+            echo "isDuplicate=true" >> "$GITHUB_OUTPUT"
+            echo "duplicateOf=$duplicate_of" >> "$GITHUB_OUTPUT"
+          fi
+
+  close-duplicate:
+    name: Close Duplicate Submission
+    runs-on: ubuntu-latest
+    needs: parse
+    if: needs.parse.outputs.isDuplicate == 'true'
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Close issue as duplicate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          DUPLICATE_OF: ${{ needs.parse.outputs.duplicateOf }}
+        run: |
+          gh issue edit "$NUMBER" --repo "$GH_REPO" --remove-label "Unchecked"
+
+          if [[ "$DUPLICATE_OF" == "$NUMBER" ]]; then
+            gh issue close "$NUMBER" --repo "$GH_REPO" \
+              --comment "This package and signature are already listed in data.yml."
+          else
+            gh issue close "$NUMBER" --repo "$GH_REPO" --duplicate-of "$DUPLICATE_OF"
+          fi
+
   accrescent:
     name: Accrescent
     runs-on: ubuntu-latest
     needs: parse
+    if: needs.parse.outputs.isDuplicate != 'true'
     continue-on-error: true
 
     outputs:
@@ -157,6 +215,7 @@ jobs:
     name: F-Droid
     runs-on: ubuntu-latest
     needs: parse
+    if: needs.parse.outputs.isDuplicate != 'true'
     continue-on-error: true
 
     outputs:
@@ -238,6 +297,8 @@ jobs:
     name: Google Play
     runs-on: ubuntu-latest
     needs: parse
+    if: needs.parse.outputs.isDuplicate != 'true'
+    continue-on-error: true
 
     outputs:
       signature: ${{ steps.appSignature.outputs.signature }}
@@ -346,7 +407,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [parse, accrescent, fdroid, gplay]
 
-    if: always()
+    if: needs.parse.outputs.isDuplicate != 'true'
     permissions:
       contents: write
       pull-requests: write
