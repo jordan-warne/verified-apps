@@ -19,7 +19,7 @@ jobs:
       isDuplicate: ${{ steps.duplicateCheck.outputs.isDuplicate }}
       duplicateOf: ${{ steps.duplicateCheck.outputs.duplicateOf }}
 
-    if: ${{ github.event.label.name == 'Unchecked' }}
+    if: ${{ github.event.label.name == 'Unchecked' || github.event.label.name == 'PR Anyways' }}
 
     permissions:
       contents: read
@@ -94,7 +94,8 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           DUPLICATE_OF: ${{ needs.parse.outputs.duplicateOf }}
         run: |
-          gh issue edit "$NUMBER" --repo "$GH_REPO" --remove-label "Unchecked"
+          gh issue edit "$NUMBER" --repo "$GH_REPO" --remove-label "Unchecked" || true
+          gh issue edit "$NUMBER" --repo "$GH_REPO" --remove-label "PR Anyways" || true
 
           if [[ "$DUPLICATE_OF" == "$NUMBER" ]]; then
             gh issue close "$NUMBER" --repo "$GH_REPO" \
@@ -107,7 +108,7 @@ jobs:
     name: Accrescent
     runs-on: ubuntu-latest
     needs: parse
-    if: needs.parse.outputs.isDuplicate != 'true'
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked'
     continue-on-error: true
     permissions:
       contents: read
@@ -189,7 +190,7 @@ jobs:
     name: F-Droid
     runs-on: ubuntu-latest
     needs: parse
-    if: needs.parse.outputs.isDuplicate != 'true'
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked'
     continue-on-error: true
     permissions:
       contents: read
@@ -274,7 +275,7 @@ jobs:
     name: Google Play
     runs-on: ubuntu-latest
     needs: parse
-    if: needs.parse.outputs.isDuplicate != 'true'
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked'
     continue-on-error: true
     permissions:
       contents: read
@@ -386,7 +387,7 @@ jobs:
     name: Direct APK Link
     runs-on: ubuntu-latest
     needs: parse
-    if: needs.parse.outputs.isDuplicate != 'true' && needs.parse.outputs.apkUrl != ''
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked' && needs.parse.outputs.apkUrl != ''
     continue-on-error: true
     permissions:
       contents: read
@@ -460,7 +461,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [parse, accrescent, fdroid, gplay, direct-apk]
 
-    if: always() && needs.parse.outputs.isDuplicate != 'true'
+    if: always() && needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked'
     permissions:
       contents: write
       pull-requests: write
@@ -667,6 +668,24 @@ jobs:
         run: |
           gh issue comment "$NUMBER" --body-file ${RUNNER_TEMP}/issueBody.md
 
+      - name: Build PR body
+        if: steps.count.outputs.matches != '0'
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          echo "**Agree with these changes? Please add a :+1: reaction to this PR!**" >> "${RUNNER_TEMP}/prBody.md"
+          echo "" >> "${RUNNER_TEMP}/prBody.md"
+          echo "One or more app stores matched the signature in issue #${ISSUE}, so I've created this PR automatically." >> "${RUNNER_TEMP}/prBody.md"
+          echo "These entries should now be verified manually (or additional entries can be added) before merging!" >> "${RUNNER_TEMP}/prBody.md"
+          echo "This PR does **not** add signatures from stores unless they also match what the submitter provided. We may need to add additional signatures to this PR if we believe the other ones are legitimate as well." >> "${RUNNER_TEMP}/prBody.md"
+          echo "" >> "${RUNNER_TEMP}/prBody.md"
+          echo "Closes #${ISSUE}" >> "${RUNNER_TEMP}/prBody.md"
+          echo "" >> "${RUNNER_TEMP}/prBody.md"
+          echo "---" >> "${RUNNER_TEMP}/prBody.md"
+          echo "" >> "${RUNNER_TEMP}/prBody.md"
+          cat "${RUNNER_TEMP}/issueBody.md" >> "${RUNNER_TEMP}/prBody.md"
+
       - name: Checkout repository
         if: steps.count.outputs.matches != '0'
         uses: actions/checkout@v6
@@ -675,80 +694,88 @@ jobs:
 
       - name: Create PR
         if: steps.count.outputs.matches != '0'
+        uses: ./.github/actions/create-submission-pr
+        with:
+          packageName: ${{ needs.parse.outputs.packageName }}
+          packageSignature: ${{ needs.parse.outputs.packageSignature }}
+          issueNumber: ${{ github.event.issue.number }}
+          prBodyFile: ${{ runner.temp }}/prBody.md
+          accrescentSignature: ${{ needs.accrescent.outputs.signature }}
+          fdroidSignature: ${{ needs.fdroid.outputs.signature }}
+          gplaySignature: ${{ needs.gplay.outputs.signature }}
+          directApkSignature: ${{ needs.direct-apk.outputs.signature }}
+
+  create-pr-anyways:
+    name: Create PR (PR Anyways)
+    runs-on: ubuntu-latest
+    needs: parse
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'PR Anyways'
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Download Repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve submitter source
+        id: submitterSource
         env:
-          PACKAGE: ${{ needs.parse.outputs.packageName }}
-          USER_SIG: ${{ needs.parse.outputs.packageSignature }}
-          ISSUE: ${{ github.event.issue.number }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          ACC_SIG: ${{ needs.accrescent.outputs.signature }}
-          FDROID_SIG: ${{ needs.fdroid.outputs.signature }}
-          GPLAY_SIG: ${{ needs.gplay.outputs.signature }}
-          DIRECT_SIG: ${{ needs.direct-apk.outputs.signature }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           set -euo pipefail
-
-          export PACKAGE ISSUE USER_SIG
-          entry="$(mktemp)"
-          yq -n '.package = strenv(PACKAGE) | .signature = []' > "$entry"
-
-          add_signature() {
-            export SIG_SOURCE="$1"
-            export SIG_FP="$2"
-            yq -i '.signature += [{"source": strenv(SIG_SOURCE), "issue": env(ISSUE), "fingerprint": strenv(SIG_FP)}]' "$entry"
-          }
-
-          if [[ -n "$ACC_SIG" && "$ACC_SIG" == "$USER_SIG" ]]; then
-            add_signature "Accrescent" "$USER_SIG"
+          app_source=$(printf '%s\n' "$ISSUE_BODY" | awk -v header="App Source" '
+            $0 == "### " header { found=1; next }
+            found && /^### / { exit }
+            found && NF { print; exit }
+          ')
+          app_source="${app_source//$'\r'/}"
+          app_source="${app_source#"${app_source%%[![:space:]]*}"}"
+          app_source="${app_source%"${app_source##*[![:space:]]}"}"
+          if [[ -z "$app_source" || "$app_source" == "_No response_" ]]; then
+            app_source="Submission"
           fi
-          if [[ -n "$FDROID_SIG" && "$FDROID_SIG" == "$USER_SIG" ]]; then
-            add_signature "F-Droid" "$USER_SIG"
-          fi
-          if [[ -n "$GPLAY_SIG" && "$GPLAY_SIG" == "$USER_SIG" ]]; then
-            add_signature "Google Play" "$USER_SIG"
-          fi
-          if [[ -n "$DIRECT_SIG" && "$DIRECT_SIG" == "$USER_SIG" ]]; then
-            add_signature "Direct APK Link" "$USER_SIG"
-          fi
+          echo "value=$app_source" >> "$GITHUB_OUTPUT"
 
-          if [[ "$(yq '.signature | length' "$entry")" -eq 0 ]]; then
-            echo "No store matched the user-provided signature; skipping PR." >&2
-            exit 0
-          fi
-
-          export ENTRY="$entry"
-          if [[ -f data.yml ]] && [[ -s data.yml ]] && yq -e '.[] | select(.package == strenv(PACKAGE))' data.yml >/dev/null 2>&1; then
-            yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature += load(strenv(ENTRY)).signature)' data.yml
-            yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature |= unique_by(.source + "|" + .fingerprint))' data.yml
-          elif [[ -f data.yml ]]; then
-            yq -i '. += [load(strenv(ENTRY))]' data.yml
-          else
-            cp "$entry" data.yml
-          fi
-          yq -i 'sort_by(.package)' data.yml
-
+      - name: Check for existing PR
+        id: existingPr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
           branch="new/${ISSUE}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add data.yml
-          git commit -m "Add ${PACKAGE} from #${ISSUE}"
-          git push -u origin "$branch"
-          
-          echo "**Agree with these changes? Please add a :+1: reaction to this PR!**" >> ${RUNNER_TEMP}/prBody.md
-          echo "" >> ${RUNNER_TEMP}/prBody.md
-          echo "One or more app stores matched the signature in issue #${ISSUE}, so I've created this PR automatically." >> ${RUNNER_TEMP}/prBody.md
-          echo "These entries should now be verified manually (or additional entries can be added) before merging!" >> ${RUNNER_TEMP}/prBody.md
-          echo "This PR does **not** add signatures from stores unless they also match what the submitter provided. We may need to add additional signatures to this PR if we believe the other ones are legitimate as well." >> ${RUNNER_TEMP}/prBody.md
-          echo "" >> ${RUNNER_TEMP}/prBody.md
-          echo "Closes #${ISSUE}" >> ${RUNNER_TEMP}/prBody.md
-          echo "" >> ${RUNNER_TEMP}/prBody.md
-          echo "---" >> ${RUNNER_TEMP}/prBody.md
-          echo "" >> ${RUNNER_TEMP}/prBody.md
-          cat ${RUNNER_TEMP}/issueBody.md >> ${RUNNER_TEMP}/prBody.md
+          existing_pr=$(gh pr list --repo "$GH_REPO" --head "$branch" --json url -q '.[0].url' || true)
+          echo "url=$existing_pr" >> "$GITHUB_OUTPUT"
 
-          gh pr create \
-            --repo "$GH_REPO" \
-            --title "Add ${PACKAGE}" \
-            --body-file ${RUNNER_TEMP}/prBody.md \
-            --head "$branch"
+      - name: Build PR body
+        if: steps.existingPr.outputs.url == ''
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo "**Agree with these changes? Please add a :+1: reaction to this PR!**"
+            echo ""
+            echo "A maintainer added the **PR Anyways** label to issue #${ISSUE}."
+            echo "This PR adds the package and fingerprint the submitter provided **without** requiring automatic store verification matches."
+            echo "Review the submission and any prior verification comments on the issue before merging."
+            echo ""
+            echo "Closes #${ISSUE}"
+          } > "${RUNNER_TEMP}/prBody.md"
+
+      - name: Create PR
+        id: create-pr
+        if: steps.existingPr.outputs.url == ''
+        uses: ./.github/actions/create-submission-pr
+        with:
+          packageName: ${{ needs.parse.outputs.packageName }}
+          packageSignature: ${{ needs.parse.outputs.packageSignature }}
+          issueNumber: ${{ github.event.issue.number }}
+          prBodyFile: ${{ runner.temp }}/prBody.md
+          commitSuffix: " (PR Anyways)"
+          submitterSource: ${{ steps.submitterSource.outputs.value }}

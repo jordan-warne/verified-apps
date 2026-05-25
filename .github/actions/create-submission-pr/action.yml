@@ -1,0 +1,140 @@
+name: Create submission PR
+description: Merge signatures into data.yml, push a branch, and open a pull request
+inputs:
+  packageName:
+    description: Android application ID
+    required: true
+  packageSignature:
+    description: Submitter-provided colon-separated SHA-256 fingerprint
+    required: true
+  issueNumber:
+    description: Submission issue number
+    required: true
+  prBodyFile:
+    description: Path to the pull request body markdown file
+    required: true
+  commitSuffix:
+    description: Optional suffix appended to the git commit message (e.g. " (PR Anyways)")
+    required: false
+    default: ""
+  accrescentSignature:
+    description: Fingerprint from Accrescent (store-match mode only)
+    required: false
+    default: ""
+  fdroidSignature:
+    description: Fingerprint from F-Droid (store-match mode only)
+    required: false
+    default: ""
+  gplaySignature:
+    description: Fingerprint from Google Play (store-match mode only)
+    required: false
+    default: ""
+  directApkSignature:
+    description: Fingerprint from direct APK download (store-match mode only)
+    required: false
+    default: ""
+  submitterSource:
+    description: When set, add the submitter fingerprint under this source and skip store matching
+    required: false
+    default: ""
+outputs:
+  prCreated:
+    description: Whether a pull request was opened
+    value: ${{ steps.create.outputs.prCreated }}
+  prUrl:
+    description: URL of the created pull request
+    value: ${{ steps.create.outputs.prUrl }}
+  skipped:
+    description: Whether PR creation was skipped (no matching store signatures)
+    value: ${{ steps.create.outputs.skipped }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      id: create
+      env:
+        PACKAGE: ${{ inputs.packageName }}
+        USER_SIG: ${{ inputs.packageSignature }}
+        ISSUE: ${{ inputs.issueNumber }}
+        PR_BODY_FILE: ${{ inputs.prBodyFile }}
+        COMMIT_SUFFIX: ${{ inputs.commitSuffix }}
+        ACC_SIG: ${{ inputs.accrescentSignature }}
+        FDROID_SIG: ${{ inputs.fdroidSignature }}
+        GPLAY_SIG: ${{ inputs.gplaySignature }}
+        DIRECT_SIG: ${{ inputs.directApkSignature }}
+        SUBMITTER_SOURCE: ${{ inputs.submitterSource }}
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        echo "prCreated=false" >> "$GITHUB_OUTPUT"
+        echo "skipped=false" >> "$GITHUB_OUTPUT"
+        echo "prUrl=" >> "$GITHUB_OUTPUT"
+
+        if [[ ! -f "$PR_BODY_FILE" ]]; then
+          echo "PR body file not found: $PR_BODY_FILE" >&2
+          exit 1
+        fi
+
+        export PACKAGE ISSUE USER_SIG
+        entry="$(mktemp)"
+        yq -n '.package = strenv(PACKAGE) | .signature = []' > "$entry"
+
+        add_signature() {
+          export SIG_SOURCE="$1"
+          export SIG_FP="$2"
+          yq -i '.signature += [{"source": strenv(SIG_SOURCE), "issue": env(ISSUE), "fingerprint": strenv(SIG_FP)}]' "$entry"
+        }
+
+        if [[ -n "$SUBMITTER_SOURCE" ]]; then
+          add_signature "$SUBMITTER_SOURCE" "$USER_SIG"
+        else
+          if [[ -n "$ACC_SIG" && "$ACC_SIG" == "$USER_SIG" ]]; then
+            add_signature "Accrescent" "$USER_SIG"
+          fi
+          if [[ -n "$FDROID_SIG" && "$FDROID_SIG" == "$USER_SIG" ]]; then
+            add_signature "F-Droid" "$USER_SIG"
+          fi
+          if [[ -n "$GPLAY_SIG" && "$GPLAY_SIG" == "$USER_SIG" ]]; then
+            add_signature "Google Play" "$USER_SIG"
+          fi
+          if [[ -n "$DIRECT_SIG" && "$DIRECT_SIG" == "$USER_SIG" ]]; then
+            add_signature "Direct APK Link" "$USER_SIG"
+          fi
+
+          if [[ "$(yq '.signature | length' "$entry")" -eq 0 ]]; then
+            echo "No store matched the user-provided signature; skipping PR." >&2
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        fi
+
+        export ENTRY="$entry"
+        if [[ -f data.yml ]] && [[ -s data.yml ]] && yq -e '.[] | select(.package == strenv(PACKAGE))' data.yml >/dev/null 2>&1; then
+          yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature += load(strenv(ENTRY)).signature)' data.yml
+          yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature |= unique_by(.source + "|" + .fingerprint))' data.yml
+        elif [[ -f data.yml ]]; then
+          yq -i '. += [load(strenv(ENTRY))]' data.yml
+        else
+          cp "$entry" data.yml
+        fi
+        yq -i 'sort_by(.package)' data.yml
+
+        branch="new/${ISSUE}"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -b "$branch"
+        git add data.yml
+        git commit -m "Add ${PACKAGE} from #${ISSUE}${COMMIT_SUFFIX}"
+        git push -u origin "$branch"
+
+        pr_url=$(gh pr create \
+          --repo "$GH_REPO" \
+          --title "Add ${PACKAGE}" \
+          --body-file "$PR_BODY_FILE" \
+          --head "$branch")
+
+        echo "prCreated=true" >> "$GITHUB_OUTPUT"
+        echo "prUrl=$pr_url" >> "$GITHUB_OUTPUT"
