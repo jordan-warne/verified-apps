@@ -17,9 +17,43 @@ runs:
       env:
         APK_PATH: ${{ inputs.path }}
       run: |
-        verification=$(${ANDROID_SDK_ROOT}/build-tools/37.0.0/apksigner verify --print-certs $APK_PATH 2>&1)
-        echo $verification
-        sha256=$(echo $verification | sed -n 's/.*SHA-256 digest: \([0-9a-fA-F]\{64\}\).*/\1/p' | head -1)
+        set -euo pipefail
+
+        sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+        if [[ -z "$sdk_root" ]]; then
+          echo "ANDROID_SDK_ROOT is not set" >&2
+          exit 1
+        fi
+
+        apksigner=$(find "$sdk_root/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+        if [[ -z "$apksigner" || ! -x "$apksigner" ]]; then
+          echo "apksigner not found under $sdk_root/build-tools" >&2
+          exit 1
+        fi
+
+        # verify may exit non-zero for warnings while still printing certs; do not fail on status.
+        verification=$("$apksigner" verify --print-certs "$APK_PATH" 2>&1) || true
+
+        # apksigner formats vary by version, e.g.:
+        #   Signer #1 certificate SHA-256 digest: <hex>
+        #   V3.0 Signer: certificate SHA-256 digest: <hex>
+        # Take the first app-signer certificate digest (not public key, not Source Stamp).
+        sha256=$(echo "$verification" | awk '
+          /^Source Stamp Signer/ { next }
+          /public key SHA-256 digest/ { next }
+          /certificate SHA-256 digest:/ {
+            sub(/^.*certificate SHA-256 digest: /, "")
+            print
+            exit
+          }
+        ')
+
+        if [[ -z "$sha256" ]]; then
+          echo "$verification" >&2
+          echo "Failed to extract app signer certificate SHA-256 digest from apksigner output" >&2
+          exit 1
+        fi
+
         echo "---"
         echo "SHA-256: $sha256"
         formattedSig=$(printf '%s' "$sha256" | tr '[:lower:]' '[:upper:]' | sed -E 's/(..)/\1:/g; s/:$//')
