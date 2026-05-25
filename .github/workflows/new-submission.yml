@@ -479,16 +479,22 @@ jobs:
 
           export PACKAGE ISSUE USER_SIG
           entry="$(mktemp)"
-          yq -n '.package = strenv(PACKAGE) | .issue = env(ISSUE) | .signature = []' > "$entry"
+          yq -n '.package = strenv(PACKAGE) | .signature = []' > "$entry"
+
+          add_signature() {
+            export SIG_SOURCE="$1"
+            export SIG_FP="$2"
+            yq -i '.signature += [{"source": strenv(SIG_SOURCE), "issue": env(ISSUE), "fingerprint": strenv(SIG_FP)}]' "$entry"
+          }
 
           if [[ -n "$ACC_SIG" && "$ACC_SIG" == "$USER_SIG" ]]; then
-            yq -i '.signature += [{"source": "Accrescent", "fingerprint": strenv(USER_SIG)}]' "$entry"
+            add_signature "Accrescent" "$USER_SIG"
           fi
           if [[ -n "$FDROID_SIG" && "$FDROID_SIG" == "$USER_SIG" ]]; then
-            yq -i '.signature += [{"source": "F-Droid", "fingerprint": strenv(USER_SIG)}]' "$entry"
+            add_signature "F-Droid" "$USER_SIG"
           fi
           if [[ -n "$GPLAY_SIG" && "$GPLAY_SIG" == "$USER_SIG" ]]; then
-            yq -i '.signature += [{"source": "Google Play", "fingerprint": strenv(USER_SIG)}]' "$entry"
+            add_signature "Google Play" "$USER_SIG"
           fi
 
           if [[ "$(yq '.signature | length' "$entry")" -eq 0 ]]; then
