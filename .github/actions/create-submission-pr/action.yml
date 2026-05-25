@@ -114,7 +114,12 @@ runs:
               repo_name=$(jq -r '.repoName' "$result_file")
               store_sig=$(jq -r '.signature' "$result_file")
               if signatures_equal "$store_sig" "$USER_SIG"; then
-                add_signature "F-Droid (${repo_name})" "$USER_SIG"
+                if [[ "$repo_name" == "F-Droid" ]]; then
+                  fdroid_source="F-Droid"
+                else
+                  fdroid_source="F-Droid (${repo_name})"
+                fi
+                add_signature "$fdroid_source" "$USER_SIG"
               fi
             done < <(find "$FDROID_RESULTS_DIR" -type f -name '*.json' 2>/dev/null | sort)
           fi

@@ -16,6 +16,7 @@ jobs:
       packageName: ${{ steps.parsed.outputs.packageName }}
       packageSignature: ${{ steps.parsed.outputs.packageSignature }}
       apkUrl: ${{ steps.parsed.outputs.apkUrl }}
+      customFdroidRepoUrl: ${{ steps.parsed.outputs.customFdroidRepoUrl }}
       isDuplicate: ${{ steps.duplicateCheck.outputs.isDuplicate }}
       duplicateOf: ${{ steps.duplicateCheck.outputs.duplicateOf }}
 
@@ -43,6 +44,7 @@ jobs:
           echo "Package Name: ${{ steps.parsed.outputs.packageName }}"
           echo "Signature: ${{ steps.parsed.outputs.packageSignature }}"
           echo "Direct APK Link: ${{ steps.parsed.outputs.apkUrl }}"
+          echo "Custom F-Droid Repository: ${{ steps.parsed.outputs.customFdroidRepoUrl }}"
 
       - name: Validate parsed submission
         uses: ./.github/actions/signature-lib
@@ -293,6 +295,100 @@ jobs:
         with:
           name: fdroid-result-${{ matrix.fDroidRepoName }}
           path: fdroid-result/${{ matrix.fDroidRepoName }}.json
+          if-no-files-found: ignore
+
+  custom-fdroid:
+    name: Custom F-Droid Repository
+    runs-on: ubuntu-latest
+    needs: parse
+    if: needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked' && needs.parse.outputs.customFdroidRepoUrl != ''
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    env:
+      PACKAGE_NAME: ${{ needs.parse.outputs.packageName }}
+      USER_SIGNATURE: ${{ needs.parse.outputs.packageSignature }}
+      FDROID_REPO_URL: ${{ needs.parse.outputs.customFdroidRepoUrl }}
+
+    steps:
+      - name: Download Repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: "false"
+
+      - name: Download F-Droid App
+        id: appDownload
+        uses: ./.github/actions/download-fdroid
+        with:
+          packageName: ${{ env.PACKAGE_NAME }}
+          fDroidRepoName: Custom
+          fDroidRepoURL: ${{ env.FDROID_REPO_URL }}
+
+      - name: Get APK Signature
+        id: appSignature
+        if: steps.appDownload.outputs.found == 'true'
+        uses: ./.github/actions/get-signature
+        with:
+          path: ${{ steps.appDownload.outputs.apkPath }}
+
+      - name: Matches User-Provided?
+        id: matches
+        if: steps.appDownload.outputs.found == 'true'
+        uses: ./.github/actions/match-signature
+        with:
+          packageName: ${{ env.PACKAGE_NAME }}
+          userSignature: ${{ env.USER_SIGNATURE }}
+          storeSignature: ${{ steps.appSignature.outputs.signature }}
+          signerKind: ${{ steps.appSignature.outputs.signerKind }}
+
+      - name: Write job summary
+        if: steps.appDownload.outputs.found == 'true'
+        env:
+          REPO_NAME: Custom
+          SIGNATURE: ${{ steps.appSignature.outputs.signature }}
+        run: |
+          echo "F-Droid (${REPO_NAME})" >> $GITHUB_STEP_SUMMARY
+          echo "$PACKAGE_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "$SIGNATURE" >> $GITHUB_STEP_SUMMARY
+
+      - name: Write repository result
+        if: always()
+        env:
+          REPO_NAME: Custom
+          FOUND: ${{ steps.appDownload.outputs.found }}
+          SIGNATURE: ${{ steps.appSignature.outputs.signature }}
+          MATCH: ${{ steps.matches.outputs.status }}
+          PKG: ${{ steps.matches.outputs.packageName }}
+          INFO_NOTE: ${{ steps.matches.outputs.infoNote }}
+          STORE_SIGNED: ${{ steps.matches.outputs.storeSignedMatch }}
+        run: |
+          set -euo pipefail
+          mkdir -p fdroid-result
+          jq -n \
+            --arg repoName "$REPO_NAME" \
+            --arg found "$FOUND" \
+            --arg signature "$SIGNATURE" \
+            --arg match "$MATCH" \
+            --arg packageName "$PKG" \
+            --arg infoNote "$INFO_NOTE" \
+            --arg storeSignedMatch "$STORE_SIGNED" \
+            '{
+              repoName: $repoName,
+              found: ($found == "true"),
+              signature: $signature,
+              match: $match,
+              packageName: $packageName,
+              infoNote: $infoNote,
+              storeSignedMatch: ($storeSignedMatch == "true")
+            }' > "fdroid-result/${REPO_NAME}.json"
+
+      - name: Upload repository result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdroid-result-Custom
+          path: fdroid-result/Custom.json
           if-no-files-found: ignore
 
   gplay:
@@ -582,7 +678,7 @@ jobs:
   summary:
     name: Generate Summary
     runs-on: ubuntu-latest
-    needs: [parse, accrescent, fdroid, gplay, appverifier-db, direct-apk]
+    needs: [parse, accrescent, fdroid, custom-fdroid, gplay, appverifier-db, direct-apk]
 
     if: always() && needs.parse.outputs.isDuplicate != 'true' && github.event.label.name == 'Unchecked'
     permissions:
@@ -636,6 +732,7 @@ jobs:
           DIRECT_PKG: ${{ needs.direct-apk.outputs.packageName }}
           DIRECT_SIG: ${{ needs.direct-apk.outputs.signature }}
           APK_URL: ${{ needs.parse.outputs.apkUrl }}
+          CUSTOM_FDROID_REPO_URL: ${{ needs.parse.outputs.customFdroidRepoUrl }}
         run: |
           set -euo pipefail
           format_sig_cell() {
@@ -644,15 +741,22 @@ jobs:
             local sig_html="${sig//$'\n'/<br>}"
             printf '%s<br>%s' "$pkg" "$sig_html"
           }
-          if [[ -n "$APK_URL" && "$AV_FOUND" == "true" ]]; then
-            echo "We attempted to check Accrescent, F-Droid (F-Droid and IzzyOnDroid), Google Play, AppVerifier's internal database, and your direct APK link for this app. If we found any results, they'll be in the table below:" >> $GITHUB_STEP_SUMMARY
-          elif [[ -n "$APK_URL" ]]; then
-            echo "We attempted to check Accrescent, F-Droid (F-Droid and IzzyOnDroid), Google Play, and your direct APK link for this app. If we found any results, they'll be in the table below:" >> $GITHUB_STEP_SUMMARY
-          elif [[ "$AV_FOUND" == "true" ]]; then
-            echo "We attempted to check Accrescent, F-Droid (F-Droid and IzzyOnDroid), Google Play, and AppVerifier's internal database for this app. If we found any results, they'll be in the table below:" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "We attempted to check Accrescent, F-Droid (F-Droid and IzzyOnDroid), and Google Play for this app. If we found any results, they'll be in the table below:" >> $GITHUB_STEP_SUMMARY
+          intro="We attempted to check Accrescent, F-Droid (F-Droid and IzzyOnDroid), Google Play"
+          extras=()
+          if [[ "$AV_FOUND" == "true" ]]; then
+            extras+=("AppVerifier's internal database")
           fi
+          if [[ -n "$CUSTOM_FDROID_REPO_URL" ]]; then
+            extras+=("your custom F-Droid repository")
+          fi
+          if [[ -n "$APK_URL" ]]; then
+            extras+=("your direct APK link")
+          fi
+          if [[ ${#extras[@]} -gt 0 ]]; then
+            intro+=", $(IFS=', '; echo "${extras[*]}")"
+          fi
+          intro+=" for this app. If we found any results, they'll be in the table below:"
+          echo "$intro" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Source | Matches | Verification |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|---|"  >> $GITHUB_STEP_SUMMARY
@@ -680,6 +784,10 @@ jobs:
             echo "| Direct APK Link | $DIRECT_MATCH | $(format_sig_cell "$DIRECT_PKG" "$DIRECT_SIG") |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo ":exclamation: We scanned the APK file at \`${APK_URL}\` which the submitter provided. This does not indicate its legitimacy, you must confirm this is a legitimate source." >> $GITHUB_STEP_SUMMARY
+          fi
+          if [[ -n "$CUSTOM_FDROID_REPO_URL" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo ":exclamation: We checked the F-Droid repository at \`${CUSTOM_FDROID_REPO_URL}\` which the submitter provided. This does not indicate its legitimacy, you must confirm this is a legitimate source." >> $GITHUB_STEP_SUMMARY
           fi
           cat "$GITHUB_STEP_SUMMARY" > ${RUNNER_TEMP}/issueBody.md
 
@@ -782,6 +890,7 @@ jobs:
         env:
           USER_SIG: ${{ needs.parse.outputs.packageSignature }}
           APK_URL: ${{ needs.parse.outputs.apkUrl }}
+          CUSTOM_FDROID_REPO_URL: ${{ needs.parse.outputs.customFdroidRepoUrl }}
           ACC_FOUND: ${{ needs.accrescent.outputs.found }}
           GPLAY_FOUND: ${{ needs.gplay.outputs.found }}
           AV_FOUND: ${{ needs.appverifier-db.outputs.found }}
@@ -802,9 +911,15 @@ jobs:
           if [[ -n "$APK_URL" ]]; then
             sources=$((sources + 1))
           fi
+          if [[ -n "$CUSTOM_FDROID_REPO_URL" ]]; then
+            sources=$((sources + 1))
+          fi
           while IFS= read -r result_file; do
             [[ -z "$result_file" ]] && continue
-            [[ "$(jq -r '.found' "$result_file")" == "true" ]] && sources=$((sources + 1))
+            [[ "$(jq -r '.found' "$result_file")" != "true" ]] && continue
+            repo_name=$(jq -r '.repoName' "$result_file")
+            [[ "$repo_name" == "Custom" ]] && continue
+            sources=$((sources + 1))
           done < <(find fdroid-results -type f -name '*.json' 2>/dev/null)
           echo "sources=$sources" >> "$GITHUB_OUTPUT"
 
