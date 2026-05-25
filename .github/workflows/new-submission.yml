@@ -588,9 +588,11 @@ jobs:
             exit 0
           fi
 
-          if [[ -f data.yml ]]; then
-            yq -i '[.[] | select(.package != strenv(PACKAGE))]' data.yml
-            export ENTRY="$entry"
+          export ENTRY="$entry"
+          if [[ -f data.yml ]] && [[ -s data.yml ]] && yq -e '.[] | select(.package == strenv(PACKAGE))' data.yml >/dev/null 2>&1; then
+            yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature += load(strenv(ENTRY)).signature)' data.yml
+            yq -i 'with(.[] | select(.package == strenv(PACKAGE)); .signature |= unique_by(.source + "|" + .fingerprint))' data.yml
+          elif [[ -f data.yml ]]; then
             yq -i '. += [load(strenv(ENTRY))]' data.yml
           else
             cp "$entry" data.yml
