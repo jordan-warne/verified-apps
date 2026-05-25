@@ -946,6 +946,25 @@ jobs:
           fi
           echo "$i"
           echo "matches=$i" >> "$GITHUB_OUTPUT"
+
+          store_matches=0
+          if [[ "$ACC_FOUND" == "true" && "$ACC_EQUAL" == "true" ]]; then
+            store_matches=$((store_matches + 1))
+          fi
+          if [[ "$GPLAY_FOUND" == "true" && "$GPLAY_EQUAL" == "true" ]]; then
+            store_matches=$((store_matches + 1))
+          fi
+          while IFS= read -r result_file; do
+            [[ -z "$result_file" ]] && continue
+            [[ "$(jq -r '.found' "$result_file")" != "true" ]] && continue
+            repo_name=$(jq -r '.repoName' "$result_file")
+            [[ "$repo_name" == "Custom" ]] && continue
+            sig=$(jq -r '.signature' "$result_file")
+            if signatures_equal "$sig" "$USER_SIG"; then
+              store_matches=$((store_matches + 1))
+            fi
+          done < <(find fdroid-results -type f -name '*.json' 2>/dev/null)
+          echo "storeMatches=$store_matches" >> "$GITHUB_OUTPUT"
           cat ${RUNNER_TEMP}/issueBody.md
 
       - name: Add Match Count
@@ -1072,6 +1091,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_URL: ${{ steps.create-pr.outputs.prUrl }}
+          STORE_MATCHES: ${{ steps.count.outputs.storeMatches }}
           ACC_FOUND: ${{ needs.accrescent.outputs.found }}
           GPLAY_FOUND: ${{ needs.gplay.outputs.found }}
           AV_FOUND: ${{ needs.appverifier-db.outputs.found }}
@@ -1083,28 +1103,34 @@ jobs:
           set -euo pipefail
           source .github/actions/signature-lib/signatures.lib.sh
           label_args=()
-          if [[ "$ACC_FOUND" == "true" && "$ACC_EQUAL" == "true" ]]; then
-            label_args+=(--add-label "Match Accrescent")
-          fi
-          if [[ "$AV_FOUND" == "true" && "$AV_EQUAL" == "true" ]]; then
-            label_args+=(--add-label "Match Appverifier")
-          fi
-          while IFS= read -r result_file; do
-            [[ -z "$result_file" ]] && continue
-            [[ "$(jq -r '.found' "$result_file")" != "true" ]] && continue
-            repo_name=$(jq -r '.repoName' "$result_file")
-            sig=$(jq -r '.signature' "$result_file")
-            if ! signatures_equal "$sig" "$USER_SIG"; then
-              continue
+          if [[ "$STORE_MATCHES" == "0" ]]; then
+            label_args+=(--add-label "No Store Match")
+          else
+            if [[ "$ACC_FOUND" == "true" && "$ACC_EQUAL" == "true" ]]; then
+              label_args+=(--add-label "Match Accrescent")
             fi
-            if [[ "$repo_name" == "F-Droid" ]]; then
-              label_args+=(--add-label "Match F-Droid")
-            elif [[ "$repo_name" == "IzzyOnDroid" ]]; then
-              label_args+=(--add-label "Match IzzyOnDroid")
+            if [[ "$AV_FOUND" == "true" && "$AV_EQUAL" == "true" ]]; then
+              label_args+=(--add-label "Match Appverifier")
             fi
-          done < <(find fdroid-results -type f -name '*.json' 2>/dev/null | sort)
-          if [[ "$GPLAY_FOUND" == "true" && "$GPLAY_EQUAL" == "true" ]]; then
-            label_args+=(--add-label "Match Play")
+            while IFS= read -r result_file; do
+              [[ -z "$result_file" ]] && continue
+              [[ "$(jq -r '.found' "$result_file")" != "true" ]] && continue
+              repo_name=$(jq -r '.repoName' "$result_file")
+              sig=$(jq -r '.signature' "$result_file")
+              if ! signatures_equal "$sig" "$USER_SIG"; then
+                continue
+              fi
+              if [[ "$repo_name" == "F-Droid" ]]; then
+                label_args+=(--add-label "Match F-Droid")
+              elif [[ "$repo_name" == "IzzyOnDroid" ]]; then
+                label_args+=(--add-label "Match IzzyOnDroid")
+              elif [[ "$repo_name" == "Custom" ]]; then
+                label_args+=(--add-label "Match Custom F-Droid")
+              fi
+            done < <(find fdroid-results -type f -name '*.json' 2>/dev/null | sort)
+            if [[ "$GPLAY_FOUND" == "true" && "$GPLAY_EQUAL" == "true" ]]; then
+              label_args+=(--add-label "Match Play")
+            fi
           fi
           if [[ ${#label_args[@]} -eq 0 ]]; then
             exit 0
@@ -1185,3 +1211,11 @@ jobs:
           prBodyFile: ${{ runner.temp }}/prBody.md
           commitSuffix: " (PR Anyways)"
           submitterSource: ${{ steps.submitterSource.outputs.value }}
+
+      - name: Label PR
+        if: steps.create-pr.outputs.prCreated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ steps.create-pr.outputs.prUrl }}
+        run: gh pr edit "$PR_URL" --repo "$GH_REPO" --add-label "No Store Match"
