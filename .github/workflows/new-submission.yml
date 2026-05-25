@@ -308,7 +308,6 @@ jobs:
           key: gplayAuth
 
       - name: Authenticate to Google Play
-        if: steps.authCache.outputs.cache-hit != 'true'
         run: ./gplay-apk-downloader/gplay auth
 
       - name: Show App Info
