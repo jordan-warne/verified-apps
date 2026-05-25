@@ -13,12 +13,15 @@ jobs:
     name: Parse Submission
     runs-on: ubuntu-latest
     outputs:
-      packageName: ${{ steps.setOutputs.outputs.packageName }}
-      packageSignature: ${{ steps.setOutputs.outputs.packageSignature }}
+      packageName: ${{ steps.parsed.outputs.packageName }}
+      packageSignature: ${{ steps.parsed.outputs.packageSignature }}
       isDuplicate: ${{ steps.duplicateCheck.outputs.isDuplicate }}
       duplicateOf: ${{ steps.duplicateCheck.outputs.duplicateOf }}
 
     if: ${{ github.event.label.name == 'Unchecked' }}
+
+    permissions:
+      issues: read
 
     steps:
       - name: Download Repository
@@ -26,35 +29,24 @@ jobs:
         with:
           persist-credentials: "false"
 
-      - uses: stefanbuck/github-issue-parser@v3.2.5
-        id: issue-parser
+      - name: Parse verification info
+        id: parsed
+        uses: ./.github/actions/parse-verification-info
         with:
-          template-path: .github/ISSUE_TEMPLATE/app-submission.yml
+          issueBody: ${{ github.event.issue.body }}
 
-      - name: Print jsonString
-        env:
-          JSON_STRING: ${{ steps.issue-parser.outputs.jsonString }}
+      - name: Print parsed submission
         run: |
-          echo "$JSON_STRING"
-          echo "${{ github.event.issue.labels }}"
+          echo "Labels: ${{ toJSON(github.event.issue.labels) }}"
+          echo "Package Name: ${{ steps.parsed.outputs.packageName }}"
+          echo "Signature: ${{ steps.parsed.outputs.packageSignature }}"
 
-      - name: Set outputs
-        id: setOutputs
+      - name: Validate parsed submission
         env:
-          JSON_STRING: ${{ steps.issue-parser.outputs.issueparser_verificationInfo }}
-        
+          PACKAGE_NAME: ${{ steps.parsed.outputs.packageName }}
+          PACKAGE_SIGNATURE: ${{ steps.parsed.outputs.packageSignature }}
         run: |
-          input="$JSON_STRING"
-
-          stripped="${input#\`\`\`}"
-          stripped="${stripped%\`\`\`}"
-          packageName=$(printf '%s\n' "$input" | sed -n '2p')
-          packageSignature=$(printf '%s\n' "$input" | sed -n '3p')
-          export packageName packageSignature
-
-          echo "Package Name: $packageName"
-          echo "Signature: $packageSignature"
-
+          set -euo pipefail
           is_valid_package_name() {
             [[ "$1" =~ ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]+)+$ ]]
           }
@@ -62,49 +54,25 @@ jobs:
             [[ "$1" =~ ^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$ ]]
           }
           errors=0
-          if ! is_valid_package_name "$packageName"; then
-            echo "Invalid packageName: $packageName" >&2
+          if ! is_valid_package_name "$PACKAGE_NAME"; then
+            echo "Invalid packageName: $PACKAGE_NAME" >&2
             errors=1
           fi
-          if ! is_valid_sha256_colon "$packageSignature"; then
-            echo "Invalid packageSignature: $packageSignature" >&2
+          if ! is_valid_sha256_colon "$PACKAGE_SIGNATURE"; then
+            echo "Invalid packageSignature: $PACKAGE_SIGNATURE" >&2
             errors=1
           fi
           if (( errors )); then
             exit 1
           fi
 
-          echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
-          echo "packageSignature=$packageSignature" >> "$GITHUB_OUTPUT"
-
-      - name: Check for duplicate in data.yml
+      - name: Check for duplicate submission
         id: duplicateCheck
-        env:
-          PACKAGE: ${{ steps.setOutputs.outputs.packageName }}
-          SIGNATURE: ${{ steps.setOutputs.outputs.packageSignature }}
-        run: |
-          echo "isDuplicate=false" >> "$GITHUB_OUTPUT"
-
-          if [[ ! -f data.yml ]] || [[ ! -s data.yml ]]; then
-            exit 0
-          fi
-
-          export PACKAGE SIGNATURE
-          duplicate_of=$(
-            yq -r '
-              .[]
-              | select(.package == strenv(PACKAGE))
-              | . as $entry
-              | $entry.signature[]
-              | select(.fingerprint == strenv(SIGNATURE))
-              | (.issue // $entry.issue)
-            ' data.yml | sort -n | head -n1
-          )
-
-          if [[ -n "$duplicate_of" && "$duplicate_of" != "null" ]]; then
-            echo "isDuplicate=true" >> "$GITHUB_OUTPUT"
-            echo "duplicateOf=$duplicate_of" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/check-duplicate-submission
+        with:
+          packageName: ${{ steps.parsed.outputs.packageName }}
+          packageSignature: ${{ steps.parsed.outputs.packageSignature }}
+          currentIssue: ${{ github.event.issue.number }}
 
   close-duplicate:
     name: Close Duplicate Submission
@@ -127,7 +95,7 @@ jobs:
 
           if [[ "$DUPLICATE_OF" == "$NUMBER" ]]; then
             gh issue close "$NUMBER" --repo "$GH_REPO" \
-              --comment "This package and signature are already listed in data.yml."
+              --comment "This package and signature are already tracked in an open submission or in data.yml."
           else
             gh issue close "$NUMBER" --repo "$GH_REPO" --duplicate-of "$DUPLICATE_OF"
           fi
