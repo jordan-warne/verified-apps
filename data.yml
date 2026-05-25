@@ -153,6 +153,17 @@
     - source: "AppVerifier"
       issue: 58
       fingerprint: F7:C3:EC:3B:0D:58:8D:3C:B5:29:83:E9:EB:1A:74:21:C9:3D:43:39:A2:86:39:8E:71:D7:B6:51:E8:D8:EC:DD
+- package: org.fossify.gallery
+  signature:
+    - source: F-Droid
+      issue: 173
+      fingerprint: AF:FD:B1:24:D3:F4:72:0C:2F:98:DB:CA:9E:AC:BA:05:14:FB:A4:30:6E:20:A2:78:6C:86:1C:3C:0D:6F:F2:92
+    - source: Google Play
+      issue: 173
+      fingerprint: AF:FD:B1:24:D3:F4:72:0C:2F:98:DB:CA:9E:AC:BA:05:14:FB:A4:30:6E:20:A2:78:6C:86:1C:3C:0D:6F:F2:92
+    - source: Direct APK Link
+      issue: 173
+      fingerprint: AF:FD:B1:24:D3:F4:72:0C:2F:98:DB:CA:9E:AC:BA:05:14:FB:A4:30:6E:20:A2:78:6C:86:1C:3C:0D:6F:F2:92
 - package: org.oxycblt.auxio
   signature:
     - source: "Accrescent"
