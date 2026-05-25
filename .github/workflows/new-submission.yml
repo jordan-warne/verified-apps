@@ -60,6 +60,8 @@ jobs:
           packageName: ${{ steps.parsed.outputs.packageName }}
           packageSignature: ${{ steps.parsed.outputs.packageSignature }}
           currentIssue: ${{ github.event.issue.number }}
+          directApkUrl: ${{ steps.parsed.outputs.apkUrl }}
+          customFdroidRepoUrl: ${{ steps.parsed.outputs.customFdroidRepoUrl }}
 
   close-duplicate:
     name: Close Duplicate Submission
