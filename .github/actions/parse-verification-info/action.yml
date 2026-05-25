@@ -103,17 +103,24 @@ runs:
         packageName=$(printf '%s\n' "$parsed" | sed -n '1p')
         packageSignature=$(printf '%s\n' "$parsed" | sed -n '2p')
 
+        validate_apk_url() {
+          local url="$1"
+          [[ -z "$url" ]] && return 1
+          if [[ ! "$url" =~ ^https:// ]]; then
+            echo "Ignoring Direct APK Link (not an https:// URL): $url" >&2
+            return 1
+          fi
+          if [[ ! "$url" =~ \.apk([?#].*)?$ ]]; then
+            echo "Ignoring Direct APK Link (not a direct .apk file; store pages and listings are not supported): $url" >&2
+            return 1
+          fi
+          printf '%s\n' "$url"
+        }
+
         apk_url=""
         if [[ -n "$ISSUE_BODY" ]]; then
-          apk_url=$(parse_issue_field "Direct APK Link" "$ISSUE_BODY" || true)
-          if [[ -n "$apk_url" && ! "$apk_url" =~ ^https:// ]]; then
-            echo "Direct APK Link must be an https:// URL" >&2
-            exit 1
-          fi
-          if [[ -n "$apk_url" && ! "$apk_url" =~ \.apk([?#].*)?$ ]]; then
-            echo "Direct APK Link must point to an .apk file" >&2
-            exit 1
-          fi
+          raw_apk_url=$(parse_issue_field "Direct APK Link" "$ISSUE_BODY" || true)
+          apk_url=$(validate_apk_url "$raw_apk_url" || true)
         fi
 
         echo "packageName=$packageName" >> "$GITHUB_OUTPUT"
